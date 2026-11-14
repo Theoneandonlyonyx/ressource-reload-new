@@ -1,0 +1,53 @@
+name: build-jar
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the newest zip (any name, any folder) and unpack it
+        run: |
+          shopt -s nocaseglob
+          # Find every .zip tracked in the repo, newest commit first.
+          newest=""
+          best=-1
+          while IFS= read -r -d '' z; do
+            t=$(git log -1 --format=%ct -- "$z")
+            t=${t:-0}
+            if [ "$t" -gt "$best" ] || { [ "$t" -eq "$best" ] && [[ "$z" > "$newest" ]]; }; then
+              best=$t
+              newest=$z
+            fi
+          done < <(git ls-files -z -- '*.zip' '*.ZIP' '*.Zip')
+
+          if [ -z "$newest" ]; then
+            echo "No zip in the repo, building the repo root itself"
+            test -f build.gradle
+            echo "SRC=." >> "$GITHUB_ENV"
+          else
+            echo "Using zip: $newest"
+            rm -rf "$RUNNER_TEMP/src" && mkdir -p "$RUNNER_TEMP/src"
+            unzip -q -o "$newest" -d "$RUNNER_TEMP/src"
+            # Shallowest build.gradle, ignoring macOS junk folders.
+            gradle_file=$(find "$RUNNER_TEMP/src" -name build.gradle -not -path '*/__MACOSX/*' | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+            test -n "$gradle_file"
+            echo "SRC=$(dirname "$gradle_file")" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.1.1
+      - run: gradle build --no-daemon
+        working-directory: ${{ env.SRC }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packkeeper-1.20.1-jar
+          path: ${{ env.SRC }}/build/libs/*.jar
+          if-no-files-found: error
